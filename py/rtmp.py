@@ -17,7 +17,7 @@ VIDEO_PATH = 'rtmp://127.0.0.1/live/stream'
 # 初始化模型 
 yolo_model = YOLO('yolov8n.pt')
 tracker = DeepSort(max_age=30)
-reid_manager = ReIDManager(threshold=0.6)
+reid_manager = ReIDManager(threshold=0.5)
 
 # 帧缓冲区，最多保留2帧（防止延迟累积）
 frame_buffer = queue.Queue(maxsize=2)
@@ -39,7 +39,7 @@ red_area_ids = set()
 
 id_alias = {}
 
-CONFIDENCE_THRESHOLD = 0.6
+CONFIDENCE_THRESHOLD = 0.5
 # 主处理函数
 def process_video():
     cap = cv2.VideoCapture(VIDEO_PATH)
@@ -81,8 +81,8 @@ def process_video():
 
         # 只保留面积较大的轮廓
         red_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > 400]
-        for cnt in red_contours:
-            cv2.drawContours(frame, [cnt], -1, (0, 255, 255), 2)
+        # for cnt in red_contours:
+        #     cv2.drawContours(frame, [cnt], -1, (0, 255, 255), 2)
 
         detections = []
         for box in results.boxes:
@@ -136,12 +136,7 @@ def process_video():
             matched_id, sim = None, -1 
             # ==== ReID 匹配逻辑 ====
             if track_id not in id_alias:
-                feat = reid_manager.extract_feature(crop_img)
-                if feat is not None:
-                    print(f"[🧬 匹配特征摘要] 当前图 sum={feat.sum():.4f}, mean={feat.mean():.4f}")
-                    matched_id, sim = reid_manager.match_feature(crop_img)
-                    print(f"[🧪 二次匹配测试] 目标图与 gallery 相似度: {sim}, 匹配到 ID: {matched_id}")
-                # matched_id, sim = reid_manager.match_feature(crop_img)
+                matched_id, sim = reid_manager.match_feature(crop_img)
                 print(f"[🔍 ReID尝试] 当前 track_id {track_id} 匹配结果: matched_id={matched_id}, sim={sim}")
                 if matched_id is not None and matched_id not in id_alias.values():
                     print(f"🔁 ReID 替换：TrackID {track_id} ← RecoveredID {matched_id} (sim {sim:.2f})")
@@ -149,8 +144,9 @@ def process_video():
                 else:
                     id_alias[track_id] = track_id
 
-            # ==== 始终用 real_id ====
             real_id = id_alias[track_id]
+            reid_manager.update_feature(real_id, crop_img)
+
             
             feat = reid_manager.extract_feature(crop_img)
             if feat is not None:
