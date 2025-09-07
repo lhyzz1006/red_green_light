@@ -4,7 +4,7 @@ import requests
 import time
 from light_controller import extend_light, jump_to, reset_light
 
-arduino_ip = "172.20.10.5"  # 替换为你的 Arduino IP
+arduino_ip = "172.20.10.5"
 violation_queue = queue.Queue()
 
 def sender_worker():
@@ -13,9 +13,9 @@ def sender_worker():
         try:
             url = f"http://{arduino_ip}/chaos"
             r = requests.get(url, timeout=2)
-            print(f"✅ Sent {count}, Arduino replied: {r.text}")
+            print(f"Sent {count}, Arduino replied: {r.text}")
         except Exception as e:
-            print(f"❌ Request failed: {e}")
+            print(f"Request failed: {e}")
         violation_queue.task_done()
 
 # 启动后台线程（只启动一次）

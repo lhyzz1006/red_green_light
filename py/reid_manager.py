@@ -23,13 +23,13 @@ class ReIDManager:
         best_id, best_score = None, None
         for tid, feat in self.gallery_features.items():
             score = float(np.dot(new_feat, feat))
-            print(f"[🔎 对比] 当前与 ID={tid} 的余弦相似度: {score:.4f}")
+            print(f"当前与 ID={tid} 的余弦相似度: {score:.4f}")
             if score > float(self.threshold) and (best_score is None or score > best_score):
-                print(f"✅ 匹配更新！原 best_score={best_score}，新为 {score:.4f}，ID={tid}")
+                print(f"匹配更新！原 best_score={best_score}，新为 {score:.4f}，ID={tid}")
                 best_id = tid
                 best_score = score
             else:
-                print(f"⛔ 未更新：score={score:.4f} ≤ threshold({self.threshold}) 或 ≤ best_score={best_score}")
+                print(f"未更新：score={score:.4f} ≤ threshold({self.threshold}) 或 ≤ best_score={best_score}")
 
-        print(f"[✅ 匹配结果] 当前匹配结果为：ID={best_id}, 匹配得分={best_score}")
+        print(f"[匹配结果] 当前匹配结果为：ID={best_id}, 匹配得分={best_score}")
         return best_id, best_score if best_score is not None else -1

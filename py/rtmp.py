@@ -1,3 +1,4 @@
+import asyncio
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -6,39 +7,34 @@ import multiprocessing as mp
 import threading
 import queue
 import time
+import requests
 
 from client_sender import send_violation_count
 from screenshot_sender import save_person_crop, send_image_to_unity
 from reid_manager import ReIDManager
-# from status_get import get_arduino_status
+from unity_http_rc import start_flask_server, register_callback
 
 CONFIDENCE_THRESHOLD = 0.5
 tile_model = YOLO('F:\\signal\\code\\runs\\detect\\train5\\weights\\best.pt')
-
-from unity_http_rc import start_flask_server, register_callback
-import threading
-
+# tile_model = YOLO('F:\\signal\\code\\model\\best.pt')
 shared_yolo = YOLO('yolov8n.pt')
-# 用于主程序实时更新状态的变量
+
 manual_count_from_unity = 0
 
-def on_unity_count_updated(count):
-    global manual_count_from_unity
-    manual_count_from_unity = count
-    print(f"📥 RTMP主程序收到Unity推送人数: {count}")
-    # ✅ 你也可以在这里直接触发 chaos 检查等逻辑
-    if count > 9:
-        print("⚠️ 超过混沌阈值，发送 chaos 请求...")
-        import requests
-        try:
-            requests.get("http://172.20.10.5/chaos", timeout=1)
-        except Exception as e:
-            print("❌ chaos 请求失败：", e)
+# def on_unity_count_updated(count):
+#     global manual_count_from_unity
+#     manual_count_from_unity = count
+#     print(f"\U0001f4e5 RTMP主程序收到Unity推送人数: {count}")
+#     if count > 9:
+#         print("超过混沌阈值，发送 chaos 请求...")
+#         try:
+#             requests.get("http://172.20.10.5/chaos", timeout=1)
+#         except Exception as e:
+#             print("chaos 请求失败：", e)
 
-# 启动 Flask + 注册回调
-def launch_flask():
-    register_callback(on_unity_count_updated)
-    threading.Thread(target=start_flask_server, daemon=True).start()
+# def launch_flask():
+#     register_callback(on_unity_count_updated)
+#     threading.Thread(target=start_flask_server, daemon=True).start()
 
 def detect_map_tiles(frame, conf=0.5):
     results = tile_model.predict(frame, conf=conf)[0]
@@ -69,16 +65,18 @@ def process_video(video_path, stream_id):
     yolo_model = YOLO('yolov8n.pt')
     tracker = DeepSort(max_age=5)
     reid_manager = ReIDManager(threshold=0.5)
-    region_presence = {}
-    chaos_log = set()
     frozen_regions = {
         'oxford': {'bbox': None, 'timestamp': None},
         'park': {'bbox': None, 'timestamp': None}
     }
 
+    person_state = {}
+    last_status_check_time = 0
+    cached_light_state = "unknown"
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print(f"❌ 无法打开视频流: {video_path}")
+        print(f"无法打开视频流: {video_path}")
         return
 
     buffer = queue.Queue(maxsize=5)
@@ -105,9 +103,10 @@ def process_video(video_path, stream_id):
             continue
 
         current_time = time.time()
-        tile_results = detect_map_tiles(frame, conf=0.5)
-        freeze_tile_regions(tile_results, frozen_regions, current_time)
-        draw_frozen_regions(frame, frozen_regions)
+        tile_results = detect_map_tiles(frame, conf=0.6)
+        if tile_results is not None:
+            freeze_tile_regions(tile_results, frozen_regions, current_time)
+            draw_frozen_regions(frame, frozen_regions)
 
         results = yolo_model(frame)[0]
         detections = []
@@ -118,11 +117,30 @@ def process_video(video_path, stream_id):
                 conf = float(box.conf[0])
                 if conf < CONFIDENCE_THRESHOLD:
                     continue
-                if 1.0 * (y2 - y1) / (x2 - x1) < 1.5:
+                if 1.0 * (y2 - y1) / (x2 - x1) < 1:
                     continue
                 detections.append(([x1, y1, x2 - x1, y2 - y1], conf, 'person'))
 
         tracks = tracker.update_tracks(detections, frame=frame)
+        if current_time - last_status_check_time >= 2:
+            try:
+                response = requests.get("http://172.20.10.5/status", timeout=0.5)
+                data = response.json()  # 解析 JSON
+                cached_light_state = data.get("color", "unknown")
+            except Exception as e:
+                print("灯状态请求异常：", e)
+                cached_light_state = "unknown"
+            last_status_check_time = current_time
+
+        # cached_light_state = "red"
+        if  cached_light_state != "red":
+            cv2.putText(frame, f"Light: {cached_light_state.upper()} - SKIP", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 100, 100), 2)
+            cv2.imshow(window_name, frame)
+            if cv2.waitKey(1) == ord('q'):
+                break
+            continue
+        
+
         for track in tracks:
             if not track.is_confirmed():
                 continue
@@ -133,48 +151,43 @@ def process_video(video_path, stream_id):
 
             foot_x = int(l + box_width / 2)
             foot_y = int(t + box_height * 0.95)
-            img_h, img_w = frame.shape[:2]
-            crop_t, crop_b = max(0, t), min(foot_y, img_h)
-            crop_l, crop_r = max(0, l), min(w, img_w)
-            if crop_b <= crop_t or crop_r <= crop_l:
-                continue
 
-            crop_img = frame[crop_t:crop_b, crop_l:crop_r]
-            if crop_img is None or crop_img.size == 0:
-                continue
-
-            reid_manager.update_feature(track_id, crop_img)
-            if track_id not in region_presence:
-                region_presence[track_id] = False
+            crop_img = frame[max(0, t):min(foot_y, frame.shape[0]), max(0, l):min(w, frame.shape[1])]
+            if crop_img is not None and crop_img.size > 0:
+                reid_manager.update_feature(track_id, crop_img)
 
             in_frozen_region = any(
                 x1 <= foot_x <= x2 and y1 <= foot_y <= y2
                 for reg in frozen_regions.values() if reg['bbox']
                 for x1, y1, x2, y2 in [reg['bbox']]
             )
-            
-            # 获取灯状态，如果是 chaos 就跳过该帧
-            # light_state = get_arduino_status()
-            # if light_state == "chaos":
-            #     cv2.putText(frame, "CHAOS MODE - SKIP", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
-            #     cv2.imshow(window_name, frame)
-            #     if cv2.waitKey(1) == ord('q'):
-            #         break
-            #     continue
 
-            if region_presence.get(track_id, False) and not in_frozen_region:
-                if track_id not in chaos_log:
-                    chaos_log.add(track_id)
-                    image_path = save_person_crop(frame, l, t, box_width, box_height, track_id)
-                    send_image_to_unity(image_path)
-                region_presence[track_id] = False
-                cv2.rectangle(frame, (l, t), (l + box_width, t + box_height), (0, 0, 255), 2)
-            elif not region_presence.get(track_id, False) and in_frozen_region:
-                region_presence[track_id] = True
-                cv2.rectangle(frame, (l, t), (l + box_width, t + box_height), (0, 255, 0), 2)
+            if track_id not in person_state:
+                person_state[track_id] = {'entered_time': None, 'in_region': False}
+
+            state = person_state[track_id]
+
+            if in_frozen_region:
+                if not state['in_region']:
+                    state['entered_time'] = current_time
+                    state['in_region'] = True
+                else:
+                    duration = current_time - state['entered_time']
+                    if duration >= 5:
+                        image_path = save_person_crop(frame, l, t, box_width, box_height, track_id)
+                        send_image_to_unity(image_path)
+                        state['entered_time'] = current_time
             else:
-                color = (0, 255, 0) if in_frozen_region else (255, 255, 0)
-                cv2.rectangle(frame, (l, t), (l + box_width, t + box_height), color, 2)
+                if state['in_region']:
+                    duration = current_time - state['entered_time']
+                    if duration >= 2:
+                        image_path = save_person_crop(frame, l, t, box_width, box_height, track_id)
+                        send_image_to_unity(image_path)
+                    state['in_region'] = False
+                    state['entered_time'] = None
+
+            color = (0, 255, 0) if in_frozen_region else (255, 255, 0)
+            cv2.rectangle(frame, (l, t), (l + box_width, t + box_height), color, 2)
 
         cv2.imshow(window_name, frame)
         if cv2.waitKey(1) == ord('q'):
@@ -194,11 +207,10 @@ def process_multiple_streams(video_paths):
         p.join()
 
 if __name__ == '__main__':
-    launch_flask()  # 启动 Flask 并注册回调 
+    # launch_flask()
     time.sleep(5)
     video_paths = [
         'rtmp://127.0.0.1/live/stream',
         'rtmp://127.0.0.1/live/stream1'
     ]
     process_multiple_streams(video_paths)
-

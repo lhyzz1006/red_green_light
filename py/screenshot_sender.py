@@ -8,7 +8,7 @@ screenshot_dir = "chaos_screenshots"
 os.makedirs(screenshot_dir, exist_ok=True)
 
 # Unity监听的接收接口地址（替换为实际Unity机器IP和端口）
-unity_endpoint = "http://192.168.1.118:8080/receive-image/"
+unity_endpoint = "http://172.20.10.8:8080/receive-image/"
 
 def save_person_crop(frame, l, t, box_width, box_height, real_id):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -27,8 +27,8 @@ def send_image_to_unity(image_path):
         response = requests.post(unity_endpoint, data=img_bytes, headers=headers)
 
         if response.status_code == 200:
-            print("✅ 图片已发送给 Unity")
+            print("图片已发送给 Unity")
         else:
-            print(f"❌ Unity响应失败: {response.status_code}")
+            print(f" Unity响应失败: {response.status_code}")
     except Exception as e:
-        print(f"❌ 图片发送失败: {e}")
+        print(f"图片发送失败: {e}")

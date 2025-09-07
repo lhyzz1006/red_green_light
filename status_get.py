@@ -5,5 +5,5 @@ def get_arduino_status():
         if res.status_code == 200:
             return res.json().get("color", "")
     except Exception as e:
-        print("⚠️ 无法获取 Arduino 状态:", e)
+        print("无法获取 Arduino 状态:", e)
     return ""
